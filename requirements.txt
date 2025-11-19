@@ -1,0 +1,10 @@
+langchain
+langgraph
+langsmith
+sdv
+langchain-groq
+langchain-community
+fastapi
+uvicorn
+langhchain-huggingface
+huggigface-hub

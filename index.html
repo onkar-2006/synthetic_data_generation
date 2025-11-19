@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agentic Synthetic Data Pipeline</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom Keyframes for the spin icon */
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .animate-spin-custom {
+            animation: spin 1s linear infinite;
+        }
+        .font-sans {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gray-50 font-sans">
+
+    <div id="app" class="p-4 sm:p-8">
+        <!-- Application content will be rendered here by JavaScript -->
+    </div>
+
+    <script>
+        // Configuration
+        const API_BASE_URL = 'http://127.0.0.1:8000';
+        const APP_CONTAINER_ID = 'app';
+        let pollingIntervalId = null;
+
+        // --- State Management ---
+        let appState = {
+            status: 'Awaiting Run',
+            qualityScore: null,
+            error: null,
+            rowCount: 0,
+            dataColumns: [],
+            dataRows: [], // Preview limited to 10 rows
+            isLoading: false,
+            runMessage: '',
+            selectedFile: null, // New state for the File object
+            inputFilePath: 'dummy_input.csv', // The actual path/name used by the backend
+            projectId: 'P_001',
+        };
+
+        const setState = (newState) => {
+            // Simple state merge and re-render
+            appState = { ...appState, ...newState };
+            renderApp();
+            handlePolling();
+        };
+
+        const handleFileChange = (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                // When a new file is selected, we track the file object and clear any previous error
+                setState({ selectedFile: file, error: null });
+            } else {
+                // If selection is cleared, remove the file object
+                setState({ selectedFile: null });
+            }
+        };
+
+
+        // --- Icon SVGs (from Lucide-React) ---
+        const Icons = {
+            Play: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 mr-2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>',
+            CheckCircle: (classes) => `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-8 h-8 ${classes}"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>`,
+            XCircle: (classes) => `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-8 h-8 ${classes}"><circle cx="12" cy="12" r="10"></circle><path d="m15 9-6 6"></path><path d="m9 9 6 6"></path></svg>`,
+            RefreshCw: (classes) => `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 mr-2 ${classes}"><path d="M3 2v6h6"></path><path d="M21 22v-6h-6"></path><path d="M21 16a9 9 0 0 0-9-9c-1.87 0-3.64.44-5.18 1.25L3 8"></path><path d="M3 16a9 9 0 0 0 9 9c1.87 0 3.64-.44 5.18-1.25L21 16"></path></svg>`,
+            Server: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-8 h-8 mr-3 text-indigo-600"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" x2="6" y1="6" y2="6"></line><line x1="18" x2="18" y1="6" y2="6"></line></svg>`,
+            TrendingUp: (classes) => `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-8 h-8 ${classes}"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"></polyline><polyline points="16 7 22 7 22 13"></polyline></svg>`,
+            Table: (classes) => `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 mr-2 ${classes}"><path d="M12 21h7a2 2 0 0 0 2-2v-7"></path><path d="M22 12V5a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7"></path><path d="M2 12h20"></path><path d="M12 2v20"></path></svg>`,
+        };
+
+
+        // --- API Calls ---
+
+        const fetchData = async () => {
+            try {
+                // Use the project ID to fetch the specific data
+                const response = await fetch(`${API_BASE_URL}/data?project_id=${appState.projectId}`);
+                if (response.ok) {
+                    const result = await response.json();
+                    setState({
+                        dataColumns: result.columns,
+                        dataRows: result.data.slice(0, 10), // Limit preview
+                        rowCount: result.data.length
+                    });
+                } else {
+                    setState({ dataColumns: [], dataRows: [], rowCount: 0 });
+                }
+            } catch (e) {
+                console.error("Error fetching data:", e);
+                // Fail silently on data fetch if status is okay
+            }
+        };
+
+        const fetchStatus = async () => {
+            let { status, qualityScore, error, isLoading, runMessage, projectId } = appState;
+            let syntheticRowCount = 0;
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/status?project_id=${projectId}`);
+                if (!response.ok) throw new Error("Server error fetching status.");
+
+                const result = await response.json();
+
+                status = result.status;
+                qualityScore = result.quality_score;
+                syntheticRowCount = result.synthetic_row_count;
+
+                if (status === 'Error' || status === 'Validation Failure') {
+                    error = result.error_message || "An unknown error occurred during pipeline execution.";
+                    isLoading = false;
+                } else if (status === 'Quality Approved') {
+                    error = null;
+                    isLoading = false;
+                    fetchData(); // Fetch final data upon approval
+                }
+
+                if (status !== 'Initialized' && status !== 'Awaiting Run') {
+                    runMessage = `Status: ${status}`;
+                } else if (isLoading && status === 'Initialized') {
+                    runMessage = 'Pipeline started... Waiting for Schema Inference.';
+                }
+
+                setState({ status, qualityScore, error, isLoading, runMessage, rowCount: syntheticRowCount });
+
+            } catch (e) {
+                error = `Could not connect to API server: ${e.message}`;
+                status = 'Error';
+                isLoading = false;
+                setState({ status, error, isLoading, runMessage: '', qualityScore: null });
+            }
+        };
+
+        const uploadFile = async (file) => {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                setState({ runMessage: `Uploading file: ${file.name}...` });
+                const response = await fetch(`${API_BASE_URL}/upload-file`, {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || "File upload failed.");
+                }
+
+                const result = await response.json();
+                return result.file_path; // Expected to be the server path
+            } catch (e) {
+                throw new Error(`Upload Error: ${e.message}`);
+            }
+        };
+
+        const runPipeline = async () => {
+            setState({
+                error: null,
+                isLoading: true,
+                status: 'Initialized',
+                runMessage: 'Pipeline started... Checking data source.',
+            });
+
+            let finalInputPath = 'dummy_input.csv';
+
+            // 1. Handle file upload if a new file is selected
+            if (appState.selectedFile) {
+                try {
+                    finalInputPath = await uploadFile(appState.selectedFile);
+                    setState({ inputFilePath: finalInputPath, runMessage: 'File uploaded. Starting processing.' });
+                } catch (e) {
+                    setState({
+                        error: e.message,
+                        status: 'Error',
+                        isLoading: false,
+                        runMessage: ''
+                    });
+                    return;
+                }
+            } else {
+                 // If no new file is selected, use the currently tracked path (which defaults to dummy_input.csv)
+                 finalInputPath = appState.inputFilePath;
+                 setState({ runMessage: 'Using existing data file. Starting processing.' });
+            }
+
+
+            // 2. Start the pipeline
+            try {
+                const response = await fetch(`${API_BASE_URL}/run-pipeline?input_file_path=${finalInputPath}&project_id=${appState.projectId}`, {
+                    method: 'POST',
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || "Failed to start pipeline.");
+                }
+
+                // The pipeline is now running on the server. Start polling.
+                await fetchStatus();
+
+            } catch (e) {
+                setState({
+                    error: `Failed to trigger pipeline: ${e.message}`,
+                    status: 'Error',
+                    isLoading: false,
+                    runMessage: ''
+                });
+            }
+        };
+
+        // --- Polling Logic (Effect replacement) ---
+        const handlePolling = () => {
+            if (pollingIntervalId) {
+                clearInterval(pollingIntervalId);
+                pollingIntervalId = null;
+            }
+
+            if (appState.isLoading) {
+                pollingIntervalId = setInterval(fetchStatus, 2000);
+            }
+        };
+
+        // --- UI Helper Functions ---
+
+        const getStatusStyle = () => {
+            if (appState.isLoading) return 'bg-yellow-500 text-white animate-pulse';
+            if (appState.status === 'Quality Approved') return 'bg-green-500 text-white';
+            if (appState.status === 'Error' || appState.status === 'Validation Failure') return 'bg-red-500 text-white';
+            return 'bg-gray-200 text-gray-700';
+        };
+
+        const getScoreColor = () => {
+            const score = appState.qualityScore;
+            if (score === null) return 'text-gray-400';
+            if (score > 0.7) return 'text-green-600';
+            if (score > 0.5) return 'text-yellow-600';
+            return 'text-red-600';
+        };
+
+        const getStatusIconHtml = (classes) => {
+            if (appState.isLoading) return Icons.RefreshCw(classes + ' animate-spin-custom');
+            if (appState.status === 'Quality Approved') return Icons.CheckCircle(classes);
+            return Icons.XCircle(classes);
+        };
+
+        // --- Component Functions (Return HTML strings) ---
+
+        const ResultCard = (title, value, iconHtml, color, loading) => {
+            const valueHtml = (loading && title === "Overall Quality Score")
+                ? `<div class="h-6 w-24 bg-gray-200 rounded mt-1 animate-pulse"></div>`
+                : `<p class="text-2xl font-bold ${color} mt-1">${value}</p>`;
+
+            return `
+                <div class="bg-white p-5 rounded-xl shadow-md border border-gray-100 flex items-center justify-between">
+                    <div>
+                        <p class="text-sm font-medium text-gray-500">${title}</p>
+                        ${valueHtml}
+                    </div>
+                    ${iconHtml}
+                </div>
+            `;
+        };
+
+        const DataPreview = (columns, rows) => {
+            const previewTitle = `Data Preview (First ${rows.length} Rows)`;
+
+            let tableContent;
+            if (rows.length === 0) {
+                const message = columns.length === 0
+                    ? "No synthetic data loaded. Run the pipeline to generate data."
+                    : "Data generated successfully, but no rows available for preview.";
+                tableContent = `<div class="p-8 text-center bg-gray-100 rounded-lg text-gray-500">${message}</div>`;
+            } else {
+                const header = columns.map(col => `
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">${col}</th>
+                `).join('');
+
+                const body = rows.map((row, index) => {
+                    const rowClass = index % 2 === 0 ? 'bg-white' : 'bg-gray-50';
+                    const cells = columns.map(col => `
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800">${row[col]}</td>
+                    `).join('');
+                    return `<tr class="${rowClass}">${cells}</tr>`;
+                }).join('');
+
+                tableContent = `
+                    <div class="overflow-x-auto rounded-lg shadow-inner border border-gray-200">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50"><tr>${header}</tr></thead>
+                            <tbody class="bg-white divide-y divide-gray-200">${body}</tbody>
+                        </table>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="mt-10">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4 flex items-center">
+                        ${Icons.Table('text-indigo-600')}
+                        ${previewTitle}
+                    </h2>
+                    ${tableContent}
+                </div>
+            `;
+        };
+
+
+        // --- Main Render Function ---
+        const renderApp = () => {
+            const { status, qualityScore, error, rowCount, dataColumns, dataRows, isLoading, runMessage, selectedFile, projectId } = appState;
+            const statusStyle = getStatusStyle();
+            const scoreColor = getScoreColor();
+
+            // Determine the file name to display
+            const displayedFileName = selectedFile ? selectedFile.name : appState.inputFilePath;
+
+            const appHtml = `
+                <div class="max-w-4xl mx-auto bg-white shadow-2xl rounded-xl p-6 md:p-10 border border-gray-100">
+
+                    <!-- Header -->
+                    <div class="flex justify-between items-start mb-8 border-b pb-4">
+                        <h1 class="text-3xl font-extrabold text-gray-800 flex items-center">
+                            ${Icons.Server}
+                            Agentic Data Pipeline
+                        </h1>
+                        <span class="px-4 py-1.5 text-sm font-semibold rounded-full shadow ${statusStyle}">
+                            ${isLoading ? 'RUNNING...' : status}
+                        </span>
+                    </div>
+
+                    <!-- Control Panel -->
+                    <div class="space-y-6 mb-8 p-6 bg-indigo-50 rounded-lg border border-indigo-200">
+                        <h2 class="text-xl font-bold text-indigo-800">Control Panel</h2>
+
+                        <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
+                            <button id="runButton"
+                                ${isLoading ? 'disabled' : ''}
+                                class="flex items-center justify-center px-6 py-3 font-semibold rounded-lg shadow-lg transition duration-200
+                                    ${isLoading
+                                        ? 'bg-gray-400 cursor-not-allowed'
+                                        : 'bg-indigo-600 text-white hover:bg-indigo-700 active:shadow-none'}"
+                            >
+                                ${isLoading ? Icons.RefreshCw('animate-spin-custom') : Icons.Play}
+                                ${isLoading ? runMessage : 'Run Synthetic Data Pipeline'}
+                            </button>
+
+                            <!-- File Input and Info -->
+                            <div class="text-sm font-medium text-gray-600 w-full sm:w-auto">
+                                <p class="mb-2">Input File:
+                                    <code class="bg-gray-200 p-1 rounded font-mono text-indigo-800">
+                                        ${displayedFileName}
+                                    </code>
+                                    <span class="ml-4">Project ID:
+                                        <code class="bg-gray-200 p-1 rounded font-mono text-indigo-800">
+                                            ${projectId}
+                                        </code>
+                                    </span>
+                                </p>
+                                <label class="block">
+                                    <span class="sr-only">Choose CSV file</span>
+                                    <input type="file" id="fileInput" accept=".csv"
+                                        class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-100 file:text-indigo-700 hover:file:bg-indigo-200 cursor-pointer"/>
+                                </label>
+                            </div>
+                            <!-- End File Input -->
+                        </div>
+
+                        ${error ? `
+                            <div class="p-4 bg-red-100 text-red-700 border border-red-300 rounded-lg">
+                                <p class="font-semibold">Pipeline Error:</p>
+                                <p class="text-sm mt-1">${error}</p>
+                            </div>
+                        ` : ''}
+                    </div>
+
+                    <!-- Results Summary -->
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+                        ${ResultCard(
+                            "Overall Quality Score",
+                            qualityScore !== null ? `${(qualityScore * 100).toFixed(2)}%` : 'N/A',
+                            Icons.TrendingUp(scoreColor),
+                            scoreColor,
+                            isLoading
+                        )}
+                        ${ResultCard(
+                            "Synthetic Rows Generated",
+                            rowCount.toLocaleString(),
+                            Icons.Table('text-blue-600'),
+                            'text-blue-600',
+                            isLoading
+                        )}
+                        ${ResultCard(
+                            "Status",
+                            status,
+                            getStatusIconHtml(statusStyle.split(' ')[0].replace('bg-', 'text-')),
+                            statusStyle.split(' ')[0].replace('bg-', 'text-'),
+                            isLoading
+                        )}
+                    </div>
+
+                    <!-- Data Preview -->
+                    ${DataPreview(dataColumns, dataRows)}
+
+                </div>
+            `;
+
+            document.getElementById(APP_CONTAINER_ID).innerHTML = appHtml;
+
+            // Re-attach event listeners after DOM update
+            const runButton = document.getElementById('runButton');
+            if (runButton) {
+                runButton.onclick = runPipeline;
+            }
+
+            const fileInput = document.getElementById('fileInput');
+            if (fileInput) {
+                fileInput.onchange = handleFileChange;
+                // If a file was previously selected, ensure the input reflects it
+                if (appState.selectedFile) {
+                    // Note: Cannot programmatically set files on input for security,
+                    // but the displayedFileName covers the UI feedback.
+                }
+            }
+        };
+
+        // --- Initialization ---
+        window.onload = () => {
+            // Initial status check and data fetch
+            fetchStatus();
+        };
+
+    </script>
+</body>
+</html>

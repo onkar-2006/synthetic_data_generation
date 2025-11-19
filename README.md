@@ -1,0 +1,1 @@
+Synth-Data Pro is a modern, high-speed platform designed to generate statistically high-fidelity, privacy-preserving synthetic data for training Machine Learning (ML) models. It moves beyond simple scripting by employing a Multi-Agent Architecture orchestrated by LangGraph to autonomously handle data analysis, synthesis, validation, and quality assurance
